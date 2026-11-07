@@ -27,23 +27,25 @@ class CameraError(RuntimeError):
     """A camera pipeline failure that should trigger a reconnect."""
 
 
-def split_jpegs(buffer: bytes) -> tuple[list[bytes], bytes]:
+def split_jpegs(buffer: bytes | bytearray) -> tuple[list[bytes], bytes]:
     """Split a byte stream into complete JPEG images and a trailing partial."""
     frames: list[bytes] = []
-    remaining = buffer
+    buf = bytearray(buffer) if isinstance(buffer, bytes) else buffer
 
     while True:
-        start = remaining.find(JPEG_START)
+        start = buf.find(JPEG_START)
         if start == -1:
+            buf.clear()
             return frames, b""
-        remaining = remaining[start:]
+        if start:
+            del buf[:start]
 
-        end = remaining.find(JPEG_END, 2)
+        end = buf.find(JPEG_END, 2)
         if end == -1:
-            return frames, remaining
+            return frames, bytes(buf)
 
-        frames.append(remaining[: end + 2])
-        remaining = remaining[end + 2 :]
+        frames.append(bytes(buf[: end + 2]))
+        del buf[: end + 2]
 
 
 def _sanitize(message: str) -> str:
@@ -319,12 +321,13 @@ class CameraWorker:
         self._stderr_thread.start()
 
     def _read_frames(self, process: subprocess.Popen[bytes]) -> None:
-        buffer = b""
+        buffer = bytearray()
         while not self._stop.is_set() and process.stdout:
             chunk = process.stdout.read(65536)
             if not chunk:
                 break
-            frames, buffer = split_jpegs(buffer + chunk)
+            buffer.extend(chunk)
+            frames, _ = split_jpegs(buffer)
             for frame in frames:
                 self._publish(frame)
 

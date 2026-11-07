@@ -366,7 +366,7 @@ class RtspClient:
         self.user_agent = user_agent
 
         self._socket: socket.socket | None = None
-        self._buffer = b""
+        self._buffer = bytearray()
         self._cseq = 0
         self._challenge: dict[str, str] | None = None
         self._auth_state: dict[str, int] = {}
@@ -425,7 +425,7 @@ class RtspClient:
                 continue
             if not chunk:
                 raise RtspError("RTSP connection closed by the device")
-            self._buffer += chunk
+            self._buffer.extend(chunk)
             self._drain_interleaved()
 
     def stop(self) -> None:
@@ -485,7 +485,7 @@ class RtspClient:
 
     def _read_response(self) -> _Response:
         while True:
-            if self._buffer.startswith(b"$") and not self._consume_interleaved():
+            if self._buffer[:1] == b"$" and not self._consume_interleaved():
                 self._fill()
                 continue
 
@@ -507,12 +507,12 @@ class RtspClient:
                     headers.setdefault(key.strip().lower(), []).append(value.strip())
 
             content_length = int((headers.get("content-length") or ["0"])[0])
-            body_start = header_end + 4
-            while len(self._buffer) < body_start + content_length:
+            total = header_end + 4 + content_length
+            while len(self._buffer) < total:
                 self._fill()
 
-            body = self._buffer[body_start : body_start + content_length]
-            self._buffer = self._buffer[body_start + content_length :]
+            body = bytes(self._buffer[header_end + 4 : total])
+            del self._buffer[:total]
             return _Response(int(status_line[1]), status_line[2], headers, body)
 
     def _fill(self) -> None:
@@ -522,26 +522,27 @@ class RtspClient:
             raise RtspError("Timed out waiting for RTSP response") from error
         if not chunk:
             raise RtspError("RTSP connection closed")
-        self._buffer += chunk
+        self._buffer.extend(chunk)
 
     def _drain_interleaved(self) -> None:
         while self._consume_interleaved():
             pass
 
     def _consume_interleaved(self) -> bool:
-        if not self._buffer.startswith(b"$"):
+        buf = self._buffer
+        if not buf or buf[0] != 0x24:  # '$'
             return False
-        if len(self._buffer) < 4:
+        if len(buf) < 4:
             return False
-        length = int.from_bytes(self._buffer[2:4], "big")
-        if len(self._buffer) < 4 + length:
+        length = int.from_bytes(buf[2:4], "big")
+        frame_len = 4 + length
+        if len(buf) < frame_len:
             return False
 
-        channel = self._buffer[1]
-        packet = self._buffer[4 : 4 + length]
-        self._buffer = self._buffer[4 + length :]
+        channel = buf[1]
         if channel == 0 and self._on_nal:
-            self._handle_rtp(packet)
+            self._handle_rtp(bytes(buf[4:frame_len]))
+        del buf[:frame_len]
         return True
 
     def _handle_rtp(self, packet: bytes) -> None:
