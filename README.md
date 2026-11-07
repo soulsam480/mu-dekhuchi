@@ -7,9 +7,10 @@ No cloud, no hosted inference, no accounts.
 ## Features
 
 - **7-camera selector** — one live stream at a time, all channels configured
-- **Decrypts Hikvision stream encryption** in real time (AES-128, H.264)
+- **Decrypts Hikvision stream encryption** in real time (AES-128), supporting **H.264 and H.265/HEVC** (H.265 experimental; firmware-dependent)
+- **Main stream by default** (`xx1`) for higher resolution, with sub stream (`xx2`) available
 - **Reads the verification code from the DVR** with an admin account
-- **Live MJPEG + camera audio**, snapshots, per-camera MP4 recording, browser playback
+- **Live MJPEG + camera audio**, snapshots, per-camera MP4 recording (stream copy), browser playback
 - **Vision events** — motion-gated frames sent to a local VLM endpoint; people,
   vehicles, animals, descriptions, confidence, snapshots, an activity signal
   that collapses repeated observations into one incident across all cameras,
@@ -63,7 +64,7 @@ dvr:
 
 capture:
   mode: decrypt # decrypt | rtsp | snapshot
-  stream: sub # sub (xx2) | main (xx1)
+  stream: main # main (xx1, default) | sub (xx2)
 
 cameras:
   - { id: "1", name: Front Door, channel: 1 }
@@ -112,14 +113,16 @@ mise run lint
 | `rtsp` | Encryption is off | Plain RTSP |
 | `snapshot` | Last resort | ISAPI JPEG polling |
 
-Encrypted NALs are flagged by RTP header extension `0x4000` and laid out as
-`[NAL header] + AES-128-ECB(first 4 KB) + plaintext rest`. The key is the device
-verification code, zero-padded to 16 bytes. The decryption port is based on
+Encrypted NALs are flagged by RTP header extension `0x4000`. The verification
+code (zero-padded to 16 bytes) is used as the AES-128-ECB key. The original
+decryption approach is based on
 [homebridge-hikvision-dvr](https://github.com/matthewdeaves/homebridge-hikvision-dvr)
 (MIT).
 
-**H.264 only.** Hikvision H.265 uses a different layout. Set each sub stream to
-H.264 (DVR UI or `uv run mu-dekhuchi codecs --set-h264`).
+**Codecs:** H.264 and H.265/HEVC are supported. H.265 encrypted-stream handling
+is **experimental** (firmware-dependent). The pipeline auto-detects the codec
+from SDP and depacketizes accordingly (H.264 FU-A/STAP-A, HEVC RFC 7798 FU/AP).
+Use `stream: sub` if a specific device/firmware doesn’t decode H.265 correctly.
 
 ## Vision
 

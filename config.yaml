@@ -12,7 +12,7 @@ dvr:
 
 capture:
   mode: decrypt # decrypt | rtsp | snapshot
-  stream: sub # sub (xx2) | main (xx1)
+  stream: main # sub (xx2) | main (xx1)
   transport: tcp
   fps: 10
   quality: 5

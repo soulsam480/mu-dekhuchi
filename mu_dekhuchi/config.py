@@ -32,7 +32,7 @@ class Settings:
     dashboard_password: str = ""
 
     stream_mode: str = "rtsp"
-    stream_kind: str = "sub"
+    stream_kind: str = "main"
     stream_ip: str = ""
     stream_port: int = 554
     stream_user: str = ""
@@ -101,7 +101,8 @@ class Settings:
         events = data.get("events") or {}
         recording = data.get("recording") or {}
 
-        stream_kind = "main" if str(capture.get("stream", "sub")).lower() == "main" else "sub"
+        stream_value = str(capture.get("stream", "main")).lower()
+        stream_kind = "sub" if stream_value == "sub" else "main"
         suffix = "01" if stream_kind == "main" else "02"
         stream_ip = str(dvr.get("host") or "")
         stream_user = str(dvr.get("user") or "")

@@ -45,14 +45,24 @@ def test_cameras_and_urls_from_yaml() -> None:
     assert settings.stream_mode == "decrypt"
 
 
-def test_main_stream_uses_channel_01() -> None:
+def test_main_stream_is_default() -> None:
     settings = Settings.from_mapping(
-        _mapping(capture={"mode": "decrypt", "stream": "main"}),
+        _mapping(capture={"mode": "decrypt"}),
         root=Path("/tmp/mu_dekhuchi-config-test"),
     )
 
     assert [camera.stream_id for camera in settings.cameras] == ["101", "201"]
     assert settings.stream_kind == "main"
+
+
+def test_sub_stream_uses_channel_02() -> None:
+    settings = Settings.from_mapping(
+        _mapping(capture={"mode": "decrypt", "stream": "sub"}),
+        root=Path("/tmp/mu_dekhuchi-config-test"),
+    )
+
+    assert [camera.stream_id for camera in settings.cameras] == ["102", "202"]
+    assert settings.stream_kind == "sub"
 
 
 def test_invalid_values_fall_back() -> None:
@@ -65,7 +75,7 @@ def test_invalid_values_fall_back() -> None:
     )
 
     assert settings.stream_mode == "rtsp"
-    assert settings.stream_kind == "sub"
+    assert settings.stream_kind == "main"
     assert settings.vision_backend == "mock"
 
 

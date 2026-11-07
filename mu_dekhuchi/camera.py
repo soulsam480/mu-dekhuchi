@@ -27,23 +27,25 @@ class CameraError(RuntimeError):
     """A camera pipeline failure that should trigger a reconnect."""
 
 
-def split_jpegs(buffer: bytes) -> tuple[list[bytes], bytes]:
+def split_jpegs(buffer: bytes | bytearray) -> tuple[list[bytes], bytes]:
     """Split a byte stream into complete JPEG images and a trailing partial."""
     frames: list[bytes] = []
-    remaining = buffer
+    buf = bytearray(buffer) if isinstance(buffer, bytes) else buffer
 
     while True:
-        start = remaining.find(JPEG_START)
+        start = buf.find(JPEG_START)
         if start == -1:
+            buf.clear()
             return frames, b""
-        remaining = remaining[start:]
+        if start:
+            del buf[:start]
 
-        end = remaining.find(JPEG_END, 2)
+        end = buf.find(JPEG_END, 2)
         if end == -1:
-            return frames, remaining
+            return frames, bytes(buf)
 
-        frames.append(remaining[: end + 2])
-        remaining = remaining[end + 2 :]
+        frames.append(bytes(buf[: end + 2]))
+        del buf[: end + 2]
 
 
 def _sanitize(message: str) -> str:
@@ -62,6 +64,7 @@ class CameraWorker:
         ffmpeg_path: str = "ffmpeg",
         fps: int = 10,
         quality: int = 5,
+        recorder: Any = None,
     ) -> None:
         self.camera = camera
         self.verification_code = verification_code
@@ -69,6 +72,7 @@ class CameraWorker:
         self.ffmpeg_path = ffmpeg_path
         self.fps = fps
         self.quality = quality
+        self.recorder = recorder
 
         self.on_nal: Callable[[bytes], None] | None = None
 
@@ -97,7 +101,8 @@ class CameraWorker:
         self._error = ""
         self._auth_failed = False
         self._ffmpeg_error = ""
-        self._decryptor = HikDecryptor(verification_code)
+        self._codec = "h264"
+        self._decryptor = HikDecryptor(verification_code, header_size=1)
         self._decrypted_nals = 0
         self._flagged_nals = 0
 
@@ -170,7 +175,7 @@ class CameraWorker:
                 "transport": "rtsp+aes",
                 "decryption": {
                     "enabled": self._decryptor.enabled,
-                    "codec": "h264",
+                    "codec": self._codec,
                     "decryptedNals": self._decrypted_nals,
                     "flaggedNals": self._flagged_nals,
                 },
@@ -195,6 +200,9 @@ class CameraWorker:
             if self._stop.wait(backoff):
                 break
 
+    def _header_size(self) -> int:
+        return 2 if self._codec == "hevc" else 1
+
     def _refresh_code(self) -> None:
         if self.verification_code or self.code_provider is None:
             return
@@ -205,7 +213,7 @@ class CameraWorker:
         if code:
             self.verification_code = code
             with self._lock:
-                self._decryptor = HikDecryptor(code)
+                self._decryptor = HikDecryptor(code, header_size=self._header_size())
 
     def _run_session(self) -> None:
         self._refresh_code()
@@ -213,7 +221,7 @@ class CameraWorker:
             self._state = "connecting"
             self._error = ""
             self._auth_failed = False
-            self._decryptor = HikDecryptor(self.verification_code)
+            self._decryptor = HikDecryptor(self.verification_code, header_size=self._header_size())
             self._restarts += 1
 
         client = RtspClient(
@@ -225,11 +233,17 @@ class CameraWorker:
         self._client = client
         info = client.start()
 
-        if info.codec != "h264":
-            raise CameraError("Encrypted H.265 is not supported; set this channel to H.264")
+        if info.codec not in {"h264", "hevc"}:
+            raise CameraError(f"Unsupported codec: {info.codec}")
+        with self._lock:
+            self._codec = info.codec
+            self._decryptor = HikDecryptor(self.verification_code, header_size=self._header_size())
+        if self.recorder is not None:
+            with suppress(Exception):
+                self.recorder.codec = info.codec
 
         self._start_ffmpeg(info.codec)
-        for parameter_set in (info.sps, info.pps):
+        for parameter_set in (info.vps, info.sps, info.pps):
             if parameter_set:
                 self._write_nal(parameter_set)
 
@@ -265,14 +279,24 @@ class CameraWorker:
             "-i",
             "pipe:0",
             "-an",
-            "-q:v",
-            str(self.quality),
-            "-f",
-            "image2pipe",
-            "-vcodec",
-            "mjpeg",
-            "pipe:1",
         ]
+        # Hikvision H.265 main streams often decode to 960x1088 (16-aligned CTU padding);
+        # crop common padding to the intended display height.
+        if codec == "hevc":
+            command.extend(
+                ["-vf", "crop=iw:if(eq(ih\\,1088)\\,1080\\,if(eq(ih\\,544)\\,540\\,ih)):0:0"]
+            )
+        command.extend(
+            [
+                "-q:v",
+                str(self.quality),
+                "-f",
+                "image2pipe",
+                "-vcodec",
+                "mjpeg",
+                "pipe:1",
+            ]
+        )
         process = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
@@ -295,12 +319,13 @@ class CameraWorker:
         self._stderr_thread.start()
 
     def _read_frames(self, process: subprocess.Popen[bytes]) -> None:
-        buffer = b""
+        buffer = bytearray()
         while not self._stop.is_set() and process.stdout:
             chunk = process.stdout.read(65536)
             if not chunk:
                 break
-            frames, buffer = split_jpegs(buffer + chunk)
+            buffer.extend(chunk)
+            frames, _ = split_jpegs(buffer)
             for frame in frames:
                 self._publish(frame)
 
