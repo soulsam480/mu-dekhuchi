@@ -102,12 +102,15 @@ def test_rtp_requires_valid_version() -> None:
 
 
 def test_parse_sdp_extracts_hevc() -> None:
-    sdp = """v=0
-m=video 0 RTP/AVP 96
-a=rtpmap:96 H265/90000
-a=fmtp:96 sprop-vps=QAEMAf//AWAAAAMAsAAAAwAAAwB4FwJA;sprop-sps=QgEBAWAAAAMAsAAAAwAAAwB4oAKAgC0WNrkky/AIAAADAAgAAAMBlg==;sprop-pps=RAHA8vA8kAA=
-a=control:trackID=video
-"""
+    sdp = (
+        "v=0\r\n"
+        "m=video 0 RTP/AVP 96\r\n"
+        "a=rtpmap:96 H265/90000\r\n"
+        "a=fmtp:96 sprop-vps=QAEMAf//AWAAAAMAsAAAAwAAAwB4FwJA;"
+        "sprop-sps=QgEBAWAAAAMAsAAAAwAAAwB4oAKAgC0WNrkky/AIAAADAAgAAAMBlg==;"
+        "sprop-pps=RAHA8vA8kAA=\r\n"
+        "a=control:trackID=video\r\n"
+    )
     info = parse_sdp(sdp)
     assert info is not None
     assert info.codec == "hevc"

@@ -27,7 +27,7 @@ two clicks.
 ## Positioning
 
 It does the parts consumer camera apps hide: it decrypts Hikvision's encrypted
-H.264 stream in-process, keeps every frame and event on the LAN, and pairs the
+RTSP stream in-process (H.264/H.265), keeps every frame and event on the LAN, and pairs the
 live feed with a local OpenAI-compatible vision model instead of a cloud
 subscription. No account, no vendor app, no hosted inference.
 
@@ -47,7 +47,7 @@ subscription. No account, no vendor app, no hosted inference.
 - Live MJPEG playback, snapshots, per-camera MP4 recording, playback and delete.
 - Motion-gated vision events with people/vehicle counts, description,
   confidence, snapshot, and model name.
-- H.264 only for encrypted Hikvision streams; H.265 is unsupported.
+- H.264 and H.265/HEVC supported for encrypted Hikvision streams (H.265 experimental, firmware-dependent); main stream (`xx1`) is the default.
 - One active camera is analysed at a time; switching resets motion detection.
 - Configuration is `config.yaml` plus three secrets in `.env`.
 - FastAPI + Jinja + Alpine.js + Tailwind; no SPA build step at runtime.

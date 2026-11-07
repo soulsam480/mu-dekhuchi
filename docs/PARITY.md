@@ -25,9 +25,11 @@
 
 ## Known limits
 
-- **H.264 only** for encrypted streams. Set the DVR stream to H.264.
-- Sub streams are capped at 352×288 by this DVR; `capture.stream: main` plus
-  H.264 gives 704×576 or 960×1080.
+- **H.264 and H.265/HEVC** are supported for encrypted streams (H.265
+  experimental, firmware-dependent). The codec is auto-detected from SDP.
+- `capture.stream: main` (`xx1`) is the default for higher resolution; sub
+  streams (`xx2`) remain available where the DVR caps them (e.g. 352×288). Main
+  stream resolution depends on DVR/camera settings.
 - Real labels require the OpenAI-compatible endpoint; `vision.backend: mock`
   works without one.
 - Only sampled stills are analyzed on inactive cameras (every 2 s), so very
