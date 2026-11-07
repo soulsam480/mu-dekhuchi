@@ -279,14 +279,24 @@ class CameraWorker:
             "-i",
             "pipe:0",
             "-an",
-            "-q:v",
-            str(self.quality),
-            "-f",
-            "image2pipe",
-            "-vcodec",
-            "mjpeg",
-            "pipe:1",
         ]
+        # Hikvision H.265 main streams often decode to 960x1088 (16-aligned CTU padding);
+        # crop common padding to the intended display height.
+        if codec == "hevc":
+            command.extend(
+                ["-vf", "crop=iw:if(eq(ih\\,1088)\\,1080\\,if(eq(ih\\,544)\\,540\\,ih)):0:0"]
+            )
+        command.extend(
+            [
+                "-q:v",
+                str(self.quality),
+                "-f",
+                "image2pipe",
+                "-vcodec",
+                "mjpeg",
+                "pipe:1",
+            ]
+        )
         process = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
