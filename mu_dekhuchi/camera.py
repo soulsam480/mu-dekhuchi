@@ -14,7 +14,7 @@ from PIL import Image
 
 from .config import CameraConfig
 from .crypto import HikDecryptor
-from .rtsp import RtspAuthError, RtspClient, SdpInfo
+from .rtsp import RtspAuthError, RtspClient
 
 JPEG_START = b"\xff\xd8\xff"
 JPEG_END = b"\xff\xd9"
@@ -239,10 +239,8 @@ class CameraWorker:
             self._codec = info.codec
             self._decryptor = HikDecryptor(self.verification_code, header_size=self._header_size())
         if self.recorder is not None:
-            try:
+            with suppress(Exception):
                 self.recorder.codec = info.codec
-            except Exception:
-                pass
 
         self._start_ffmpeg(info.codec)
         for parameter_set in (info.vps, info.sps, info.pps):
