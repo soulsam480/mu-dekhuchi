@@ -30,6 +30,7 @@ class RtspAuthError(RtspError):
 class SdpInfo:
     codec: str
     control: str
+    vps: bytes | None
     sps: bytes | None
     pps: bytes | None
     raw: str
@@ -124,6 +125,7 @@ def parse_sdp(sdp: str) -> SdpInfo | None:
     in_video = False
     control = ""
     codec = "h264"
+    vps: bytes | None = None
     sps: bytes | None = None
     pps: bytes | None = None
 
@@ -137,18 +139,34 @@ def parse_sdp(sdp: str) -> SdpInfo | None:
             continue
         if line.startswith("a=control:"):
             control = line.split(":", 1)[1].strip()
-        elif line.startswith("a=rtpmap:") and "H265" in line.upper():
-            codec = "hevc"
+        elif line.startswith("a=rtpmap:"):
+            upper = line.upper()
+            if "H265" in upper or "HEVC" in upper:
+                codec = "hevc"
+            elif "H264" in upper:
+                codec = "h264"
         elif line.startswith("a=fmtp:"):
+            # H.264
             sprop = re.search(r"sprop-parameter-sets=([^;\s]+)", line)
             if sprop:
                 parts = sprop.group(1).split(",")
                 sps = _decode_base64(parts[0])
                 pps = _decode_base64(parts[1]) if len(parts) > 1 else None
+            # HEVC (RFC 7798)
+            if codec == "hevc":
+                vps_m = re.search(r"sprop-vps=([^;\s]+)", line)
+                sps_m = re.search(r"sprop-sps=([^;\s]+)", line)
+                pps_m = re.search(r"sprop-pps=([^;\s]+)", line)
+                if vps_m:
+                    vps = _decode_base64(vps_m.group(1).split(",")[0])
+                if sps_m:
+                    sps = _decode_base64(sps_m.group(1).split(",")[0])
+                if pps_m:
+                    pps = _decode_base64(pps_m.group(1).split(",")[0])
 
     if not in_video and not control:
         return None
-    return SdpInfo(codec=codec, control=control or "*", sps=sps, pps=pps, raw=sdp)
+    return SdpInfo(codec=codec, control=control or "*", vps=vps, sps=sps, pps=pps, raw=sdp)
 
 
 def resolve_control(base_url: str, control: str) -> str:
@@ -245,6 +263,81 @@ class NalAssembler:
         return [(nal, packet.timestamp, flagged)]
 
 
+HEVC_NAL_AP = 48
+HEVC_NAL_FU = 49
+
+
+class HevcNalAssembler:
+    """Turn RTP payloads into complete HEVC (H.265) NAL units (RFC 7798)."""
+
+    def __init__(self) -> None:
+        self._fragments: list[bytes] | None = None
+        self._fragment_header: bytes | None = None
+        self._fragment_flagged = False
+
+    def feed(self, packet: RtpPacket) -> list[tuple[bytes, int, bool]]:
+        payload = packet.payload
+        if len(payload) < 2:
+            return []
+        nal_type = (payload[0] >> 1) & 0x3F
+
+        # Single NAL unit packet (types 0-47)
+        if nal_type <= 47:
+            self._fragments = None
+            return [(payload, packet.timestamp, packet.flagged)]
+
+        if nal_type == HEVC_NAL_AP:
+            return self._unpack_ap(payload, packet)
+
+        if nal_type == HEVC_NAL_FU:
+            return self._unpack_fu(payload, packet)
+
+        # PACI and others: drop for now
+        return []
+
+    def _unpack_ap(self, payload: bytes, packet: RtpPacket) -> list[tuple[bytes, int, bool]]:
+        self._fragments = None
+        units: list[tuple[bytes, int, bool]] = []
+        offset = 2  # skip payload header
+        while offset + 2 <= len(payload):
+            size = int.from_bytes(payload[offset : offset + 2], "big")
+            offset += 2
+            if size == 0 or offset + size > len(payload):
+                break
+            units.append((payload[offset : offset + size], packet.timestamp, packet.flagged))
+            offset += size
+        return units
+
+    def _unpack_fu(self, payload: bytes, packet: RtpPacket) -> list[tuple[bytes, int, bool]]:
+        if len(payload) < 3:
+            return []
+        fu_header = payload[2]
+        start = bool(fu_header & 0x80)
+        end = bool(fu_header & 0x40)
+        fu_type = fu_header & 0x3F
+
+        if start:
+            # Reconstruct 2-byte HEVC NAL header: keep F and layer/tid bits, replace type
+            nal_header = bytes([(payload[0] & 0x81) | (fu_type << 1), payload[1]])
+            self._fragment_header = nal_header
+            self._fragments = [payload[3:]]
+            self._fragment_flagged = packet.flagged
+        elif self._fragments is not None:
+            self._fragments.append(payload[3:])
+            # If any fragment is flagged, treat as flagged? Or keep start's flag.
+            if packet.flagged:
+                self._fragment_flagged = True
+
+        if not end or self._fragments is None or self._fragment_header is None:
+            return []
+
+        nal = self._fragment_header + b"".join(self._fragments)
+        flagged = self._fragment_flagged
+        self._fragments = None
+        self._fragment_header = None
+        return [(nal, packet.timestamp, flagged)]
+
+
 class RtspClient:
     """Minimal RTSP client for RTP-over-TCP interleaved H.264/H.265."""
 
@@ -279,7 +372,8 @@ class RtspClient:
         self._auth_state: dict[str, int] = {}
         self._session = ""
         self._play_url = self.base_url
-        self._assembler = NalAssembler()
+        self._assembler: NalAssembler | HevcNalAssembler = NalAssembler()
+        self.codec = "h264"
         self._on_nal: Callable[[bytes, int, bool], None] | None = None
         self._closed = False
         self._lock = threading.Lock()
@@ -290,6 +384,8 @@ class RtspClient:
         info = parse_sdp(response.body.decode("utf-8", "replace"))
         if info is None:
             raise RtspError("SDP contains no video track")
+        self.codec = info.codec
+        self._assembler = HevcNalAssembler() if info.codec == "hevc" else NalAssembler()
 
         base = (
             response.header("content-base") or response.header("content-location") or self.base_url

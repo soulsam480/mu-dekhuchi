@@ -15,11 +15,12 @@ STOP_TIMEOUT = 5.0
 
 
 class NalRecorder:
-    """Pipe decrypted H.264 NAL units into ffmpeg and manage the saved MP4s."""
+    """Pipe decrypted NAL units into ffmpeg and manage the saved MP4s."""
 
-    def __init__(self, directory: Path, ffmpeg_path: str = "ffmpeg") -> None:
+    def __init__(self, directory: Path, ffmpeg_path: str = "ffmpeg", codec: str = "h264") -> None:
         self.directory = Path(directory)
         self.ffmpeg_path = ffmpeg_path
+        self.codec = codec
 
         self._lock = threading.Lock()
         self._proc: subprocess.Popen[bytes] | None = None
@@ -39,7 +40,7 @@ class NalRecorder:
             name = f"rec-{started_at:%Y%m%d-%H%M%S}.mp4"
 
             proc = subprocess.Popen(
-                [self.ffmpeg_path, *_ffmpeg_args(self.directory / name)],
+                [self.ffmpeg_path, *_ffmpeg_args(self.directory / name, self.codec)],
                 stdin=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
@@ -141,14 +142,15 @@ class NalRecorder:
         }
 
 
-def _ffmpeg_args(path: Path) -> list[str]:
+def _ffmpeg_args(path: Path, codec: str = "h264") -> list[str]:
+    fmt = "hevc" if codec == "hevc" else "h264"
     return [
         "-y",
         "-hide_banner",
         "-loglevel",
         "error",
         "-f",
-        "h264",
+        fmt,
         "-i",
         "pipe:0",
         "-c",

@@ -14,7 +14,7 @@ from PIL import Image
 
 from .config import CameraConfig
 from .crypto import HikDecryptor
-from .rtsp import RtspAuthError, RtspClient
+from .rtsp import RtspAuthError, RtspClient, SdpInfo
 
 JPEG_START = b"\xff\xd8\xff"
 JPEG_END = b"\xff\xd9"
@@ -62,6 +62,7 @@ class CameraWorker:
         ffmpeg_path: str = "ffmpeg",
         fps: int = 10,
         quality: int = 5,
+        recorder: Any = None,
     ) -> None:
         self.camera = camera
         self.verification_code = verification_code
@@ -69,6 +70,7 @@ class CameraWorker:
         self.ffmpeg_path = ffmpeg_path
         self.fps = fps
         self.quality = quality
+        self.recorder = recorder
 
         self.on_nal: Callable[[bytes], None] | None = None
 
@@ -97,7 +99,8 @@ class CameraWorker:
         self._error = ""
         self._auth_failed = False
         self._ffmpeg_error = ""
-        self._decryptor = HikDecryptor(verification_code)
+        self._codec = "h264"
+        self._decryptor = HikDecryptor(verification_code, header_size=1)
         self._decrypted_nals = 0
         self._flagged_nals = 0
 
@@ -170,7 +173,7 @@ class CameraWorker:
                 "transport": "rtsp+aes",
                 "decryption": {
                     "enabled": self._decryptor.enabled,
-                    "codec": "h264",
+                    "codec": self._codec,
                     "decryptedNals": self._decrypted_nals,
                     "flaggedNals": self._flagged_nals,
                 },
@@ -195,6 +198,9 @@ class CameraWorker:
             if self._stop.wait(backoff):
                 break
 
+    def _header_size(self) -> int:
+        return 2 if self._codec == "hevc" else 1
+
     def _refresh_code(self) -> None:
         if self.verification_code or self.code_provider is None:
             return
@@ -205,7 +211,7 @@ class CameraWorker:
         if code:
             self.verification_code = code
             with self._lock:
-                self._decryptor = HikDecryptor(code)
+                self._decryptor = HikDecryptor(code, header_size=self._header_size())
 
     def _run_session(self) -> None:
         self._refresh_code()
@@ -213,7 +219,7 @@ class CameraWorker:
             self._state = "connecting"
             self._error = ""
             self._auth_failed = False
-            self._decryptor = HikDecryptor(self.verification_code)
+            self._decryptor = HikDecryptor(self.verification_code, header_size=self._header_size())
             self._restarts += 1
 
         client = RtspClient(
@@ -225,11 +231,19 @@ class CameraWorker:
         self._client = client
         info = client.start()
 
-        if info.codec != "h264":
-            raise CameraError("Encrypted H.265 is not supported; set this channel to H.264")
+        if info.codec not in {"h264", "hevc"}:
+            raise CameraError(f"Unsupported codec: {info.codec}")
+        with self._lock:
+            self._codec = info.codec
+            self._decryptor = HikDecryptor(self.verification_code, header_size=self._header_size())
+        if self.recorder is not None:
+            try:
+                self.recorder.codec = info.codec
+            except Exception:
+                pass
 
         self._start_ffmpeg(info.codec)
-        for parameter_set in (info.sps, info.pps):
+        for parameter_set in (info.vps, info.sps, info.pps):
             if parameter_set:
                 self._write_nal(parameter_set)
 

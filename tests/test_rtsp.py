@@ -99,3 +99,45 @@ def test_assembler_handles_stap_a() -> None:
 def test_rtp_requires_valid_version() -> None:
     assert parse_rtp(b"\x00" + b"\x00" * 11) is None
     assert parse_rtp(b"") is None
+
+
+def test_parse_sdp_extracts_hevc() -> None:
+    sdp = """v=0
+m=video 0 RTP/AVP 96
+a=rtpmap:96 H265/90000
+a=fmtp:96 sprop-vps=QAEMAf//AWAAAAMAsAAAAwAAAwB4FwJA;sprop-sps=QgEBAWAAAAMAsAAAAwAAAwB4oAKAgC0WNrkky/AIAAADAAgAAAMBlg==;sprop-pps=RAHA8vA8kAA=
+a=control:trackID=video
+"""
+    info = parse_sdp(sdp)
+    assert info is not None
+    assert info.codec == "hevc"
+    assert info.control == "trackID=video"
+    assert info.vps is not None
+    assert info.sps is not None
+    assert info.pps is not None
+
+
+def test_hevc_assembler_handles_single_and_fu() -> None:
+    from mu_dekhuchi.rtsp import HevcNalAssembler
+
+    assembler = HevcNalAssembler()
+    # HEVC VPS single NAL (type 32): header bytes 0x40 0x01 -> (0x40>>1)&0x3f=32
+    vps = bytes([0x40, 0x01, 0xAA, 0xBB])
+    single = parse_rtp(_rtp(vps))
+    assert single is not None
+    assert assembler.feed(single) == [(vps, 123, False)]
+
+    # FU (type 49): payload hdr 0x62 0x01 (type 49), FU hdr S=1/E=0 FuType=19 -> 0x93, then data
+    fu_start = parse_rtp(_rtp(bytes([0x62, 0x01, 0x93]) + b"hello", flagged=True))
+    fu_end = parse_rtp(_rtp(bytes([0x62, 0x01, 0x53]) + b"world"))  # E=1, FuType=19
+    assert fu_start is not None and fu_end is not None
+    assert assembler.feed(fu_start) == []
+    out = assembler.feed(fu_end)
+    assert len(out) == 1
+    nal, ts, flagged = out[0]
+    # reconstructed header: (0x62 & 0x81)|(19<<1)= (0x00)|(38=0x26)=0x26, second byte 0x01
+    assert nal[:2] == bytes([0x26, 0x01])
+    assert (nal[0] >> 1) & 0x3F == 19
+    assert nal[2:] == b"helloworld"
+    assert flagged is True
+    assert ts == 123

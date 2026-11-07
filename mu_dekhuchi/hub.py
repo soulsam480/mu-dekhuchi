@@ -65,6 +65,7 @@ class CameraHub:
                     ffmpeg_path=self.settings.ffmpeg_path,
                     fps=self.settings.stream_fps,
                     quality=self.settings.stream_quality,
+                    recorder=recorder,
                 )
                 worker.on_nal = recorder.push
                 self._cameras[key] = worker
@@ -150,7 +151,7 @@ def _idle_camera(settings: Settings) -> dict[str, object]:
         "lastFrameAt": None,
         "restarts": 0,
         "transport": "rtsp+aes",
-        "decryption": {"enabled": False, "codec": "h264", "decryptedNals": 0, "flaggedNals": 0},
+        "decryption": {"enabled": False, "codec": settings.stream_kind if hasattr(settings, "stream_kind") else "h264", "decryptedNals": 0, "flaggedNals": 0},
     }
 
 
